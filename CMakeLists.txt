@@ -9,6 +9,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 include_directories(include)
 aux_source_directory(src SOURCES)
 
+# Add additional warings
+add_compile_options(-Wall -Wextra -Wshadow -Wconversion)
+
 option(ENABLE_TESTING "enable testing" ON)
 
 if (ENABLE_TESTING)
