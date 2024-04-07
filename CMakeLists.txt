@@ -21,9 +21,15 @@ if (ENABLE_TESTING)
 
   # Use Catch2 as test framework
   add_subdirectory(third_party/Catch2)
-  
+
+  file(GLOB_RECURSE TESTS "test/*.cpp")
+
+  # Add fsanitize
+  add_compile_options(-fsanitize=address -fsanitize=undefined)
+  add_link_options(-fsanitize=address -fsanitize=undefined)
+
   add_executable(tests
-    test/test.cpp
+    ${TESTS}
     ${SOURCES}
   )
   target_link_libraries(tests PRIVATE
