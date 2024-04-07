@@ -7,13 +7,7 @@
 #include <type_traits>
 
 namespace ultl {
-struct leftist_heap_node_base_ {
-  using base_ptr = leftist_heap_node_base_ *;
-
-  base_ptr pre;
-};
-
-template <class T> struct leftist_heap_node_ : public leftist_heap_node_base_ {
+template <class T> struct leftist_heap_node_ {
   using dist_type = std::int32_t;
   using node_ptr = leftist_heap_node_<T> *;
 
@@ -21,6 +15,8 @@ template <class T> struct leftist_heap_node_ : public leftist_heap_node_base_ {
   T value;
   // `lc` means the left child, and `rc` means the right child.
   node_ptr lc, rc;
+
+  leftist_heap_node_() : dist(1), lc(nullptr), rc(nullptr) {}
 
   T *value_ptr() { return std::addressof(value); }
   const T *value_ptr() const { return std::addressof(value); }
@@ -42,16 +38,14 @@ template <class Compare> struct leftist_heap_compare_ {
       : comp(from.comp) {}
 };
 
-struct leftist_heap_header_ {
-  leftist_heap_node_base_ header;
+template <class T> struct leftist_heap_header_ {
+  leftist_heap_node_<T> *header;
   std::size_t node_count;
 
-  leftist_heap_header_() noexcept {
-    reset();
-  }
+  leftist_heap_header_() noexcept { reset(); }
 
   leftist_heap_header_(leftist_heap_header_ &&from) noexcept {
-    if (from.header.pre != nullptr) {
+    if (from.header != nullptr) {
       move_data(from);
     } else {
       reset();
@@ -59,15 +53,14 @@ struct leftist_heap_header_ {
   }
 
   void move_data(leftist_heap_header_ &other) {
-    header.pre = other.header.pre;
-    header.pre->pre = &header;
+    header = other.header;
     node_count = other.node_count;
 
     other.reset();
   }
 
   void reset() {
-    header.pre = nullptr;
+    header = nullptr;
     node_count = 0;
   }
 };
@@ -91,8 +84,6 @@ public:
   using const_reference = const value_type &;
 
 protected:
-  using base_ptr_ = leftist_heap_node_base_ *;
-  using const_base_ptr_ = const leftist_heap_node_base_ *;
   using node_ptr_ = leftist_heap_node_<T> *;
   using const_node_ptr_ = const leftist_heap_node_<T> *;
 
@@ -103,7 +94,8 @@ private:
 
 protected:
   node_ptr_ get_node_() {
-    return allocator_traits_::allocate(get_node_allocator_(), 1);
+    node_ptr_ p = allocator_traits_::allocate(get_node_allocator_(), 1);
+    return p;
   }
 
   void put_node_(node_ptr_ p) noexcept {
@@ -160,15 +152,12 @@ protected:
     return std::identity()(*p->value_ptr());
   }
 
-  static const_reference value_(const_base_ptr_ p) {
-    return value_(static_cast<const_node_ptr_>(p));
-  }
-
-  template <typename ValueCompare>
+  template <class Value, typename ValueCompare>
   struct leftist_heap_impl_ : public node_allocator_,
                               public leftist_heap_compare_<ValueCompare>,
-                              public leftist_heap_header_ {
+                              public leftist_heap_header_<Value> {
     using base_compare = leftist_heap_compare_<ValueCompare>;
+    using base_header = leftist_heap_header_<Value>;
 
     leftist_heap_impl_() noexcept(
         std::is_nothrow_default_constructible<node_allocator_>::value &&
@@ -178,7 +167,7 @@ protected:
     leftist_heap_impl_(const leftist_heap_impl_ &other)
         : node_allocator_(
               allocator_traits_::select_on_container_copy_construction(other)),
-          base_compare(other.comp), leftist_heap_header_() {}
+          base_compare(other.comp), base_header() {}
 
     leftist_heap_impl_(leftist_heap_impl_ &&from) noexcept(
         std::is_nothrow_move_constructible<base_compare>::value) = default;
@@ -188,17 +177,17 @@ protected:
 
     leftist_heap_impl_(leftist_heap_impl_ &&from, node_allocator_ &&from_a)
         : node_allocator_(std::move(from_a)), base_compare(std::move(from)),
-          leftist_heap_header_(std::move(from)) {}
+          base_header(std::move(from)) {}
 
     leftist_heap_impl_(const base_compare &other_c, node_allocator_ &&from_a)
         : node_allocator_(std::move(from_a)), base_compare(other_c) {}
   };
 
-  leftist_heap_impl_<Compare> impl_;
+  leftist_heap_impl_<T, Compare> impl_;
 
-  base_ptr_ &root_() noexcept { return this->impl_.header.pre; }
+  node_ptr_ &root_() noexcept { return this->impl_.header; }
 
-  const_base_ptr_ root_() const noexcept { return this->impl_.header.pre; }
+  const_node_ptr_ root_() const noexcept { return this->impl_.header; }
 
   node_allocator_ &get_node_allocator_() noexcept { return this->impl_; }
 
@@ -230,7 +219,6 @@ private:
       x->dist = 1;
     } else {
       x->dist = 1 + x->rc->dist;
-      x->rc->pre = x;
       if (x->lc != nullptr && x->lc->dist < x->rc->dist)
         std::swap(x->lc, x->rc);
     }
@@ -274,9 +262,7 @@ public:
 
   // Deconstructor
 
-  ~leftist_heap() noexcept {
-    erase_(static_cast<node_ptr_>(root_()));
-  }
+  ~leftist_heap() noexcept { erase_(root_()); }
 
   // Assignment operator
 
@@ -305,26 +291,25 @@ public:
 
   // Insert an element into the leftist heap.
   void push(const value_type &value) {
-    root_() = merge_node_(static_cast<node_ptr_>(root_()), create_node_(value));
+    root_() = merge_node_(root_(), create_node_(value));
     ++this->impl_.node_count;
   }
 
   void push(value_type &&value) {
-    root_() = merge_node_(static_cast<node_ptr_>(root_()),
-                          create_node_(std::forward<value_type &&>(value)));
+    root_() =
+        merge_node_(root_(), create_node_(std::forward<value_type &&>(value)));
     ++this->impl_.node_count;
   }
 
   // Construct an element in-place and insert it to the leftist heap.
   template <class... Args> void emplace(Args &&...args) {
-    root_() =
-        merge_node_(static_cast<node_ptr_>(root_()), create_node_(args...));
+    root_() = merge_node_(root_(), create_node_(args...));
     ++this->impl_.node_count;
   }
 
   // Remove the top element.
   void pop() {
-    node_ptr_ heap = static_cast<node_ptr_>(root_());
+    node_ptr_ heap = root_();
     node_ptr_ tmp = merge_node_(heap.lc, heap.rc);
     destroy_node_(heap);
     root_() = tmp;
