@@ -10,7 +10,7 @@ include_directories(include)
 aux_source_directory(src SOURCES)
 
 # Add additional warings
-add_compile_options(-Wall -Wextra -Wshadow -Wconversion)
+add_compile_options(-Wall -Wextra -Wshadow -Wconversion -O2)
 
 option(ENABLE_TESTING "enable testing" ON)
 
