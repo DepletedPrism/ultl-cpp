@@ -2,9 +2,8 @@
 #define _ULTL_LEFTIST_HEAP_HPP
 
 #include <cstdint>
-#include <functional>
 #include <memory>
-#include <type_traits>
+#include <utility>
 
 namespace ultl {
 template <class T> struct leftist_heap_node_ {
@@ -130,16 +129,6 @@ protected:
     put_node_(p);
   }
 
-  template <bool Move, typename NodeGen>
-  node_ptr_ clone_node_(node_ptr_ p, NodeGen &node_gen) {
-    using condition = std::conditional<Move, value_type &&, const value_type &>;
-    node_ptr_ tmp = node_gen(std::forward<condition>(*p->value_ptr()));
-    tmp->dist = p->dist;
-    tmp->lc = nullptr;
-    tmp->rc = nullptr;
-    return tmp;
-  }
-
   static const_reference value_(const_node_ptr_ p) {
     static_assert(
         std::is_invocable<Compare &, const T &, const T &>{},
@@ -196,7 +185,92 @@ protected:
   }
 
 private:
-  void erase_(node_ptr_ x) {
+  // Functor that used for allocating node.
+  //
+  // An optimization is using an extra functor to handle the situation that
+  // there are some nodes waiting to be recycled when allocating, e.g. copy
+  // constructors, assignments, just like what SGI STL does in stl_tree.h.
+  //
+  // For the sake of simplicity, only `alloc_node_` is implemented here, without
+  // considering recycling nodes.
+  struct alloc_node_ {
+    alloc_node_(leftist_heap &other) : heap(other) {}
+
+    template <class... Args> node_ptr_ operator()(Args &&...args) {
+      return heap.create_node_(std::forward<Args>(args)...);
+    }
+
+  private:
+    leftist_heap &heap;
+  };
+
+  enum {
+    as_lvalue_ = 0,
+    as_rvalue_ = 1,
+  };
+
+  template <bool Move, typename NodeGen>
+  node_ptr_ clone_node_(node_ptr_ p, NodeGen &node_gen) {
+    using condition =
+        std::conditional_t<Move, value_type &&, const value_type &>;
+    node_ptr_ tmp = node_gen(std::forward<condition>(*p->value_ptr()));
+    tmp->dist = p->dist;
+    return tmp;
+  }
+
+  template <bool Move, typename NodeGen>
+  node_ptr_ clone_(node_ptr_ other_p, NodeGen &node_gen) {
+    node_ptr_ rt = clone_node_<Move>(other_p, node_gen);
+    try {
+      node_ptr_ p = rt;
+      if (other_p->rc != nullptr)
+        p->rc = clone_<Move>(other_p->rc, node_gen);
+      other_p = other_p->lc;
+      while (other_p != nullptr) {
+        node_ptr_ q = clone_node_<Move>(other_p, node_gen);
+        p->lc = q;
+        if (other_p->rc != nullptr)
+          q->rc = clone_<Move>(other_p->rc, node_gen);
+        p = q;
+        other_p = other_p->lc;
+      }
+    } catch (...) {
+      erase_(rt);
+      throw;
+    }
+    return rt;
+  }
+
+  template <bool Move, typename NodeGen>
+  node_ptr_ clone_(const leftist_heap &other, NodeGen &node_gen) {
+    // the root of `other` should not be nullptr
+    node_ptr_ rt = clone_<Move>(other.impl_.header, node_gen);
+    this->impl_.node_count = other.impl_.node_count;
+    return rt;
+  }
+
+  node_ptr_ copy_(const leftist_heap &other) {
+    alloc_node_ alloc(*this);
+    return clone_<as_lvalue_>(other, alloc);
+  }
+
+  void copy_assign_(const leftist_heap &other) {
+    clear();
+    if (other.root_() != nullptr) {
+      root_() = copy_(other);
+    }
+  }
+
+  void move_assign_(leftist_heap &other) {
+    clear();
+    if (other.root_() != nullptr) {
+      alloc_node_ alloc(*this);
+      root_() = clone_<as_rvalue_>(other, alloc);
+      other.clear();
+    }
+  }
+
+  void erase_(node_ptr_ x) noexcept {
     while (x != nullptr) {
       erase_(x->rc);
       node_ptr_ y = x->lc;
@@ -215,12 +289,14 @@ private:
     if (comp()(x->value, y->value)) // default behaviour is y->value < x->value
       std::swap(x, y);
     x->rc = merge_node_(x->rc, y);
-    if (x->rc == nullptr) {
+    if (x->lc == nullptr) {
+      std::swap(x->lc, x->rc);
       x->dist = 1;
     } else {
-      x->dist = 1 + x->rc->dist;
-      if (x->lc != nullptr && x->lc->dist < x->rc->dist)
+      // x->rc must not be nullptr since y is not nullptr
+      if (x->lc->dist < x->rc->dist)
         std::swap(x->lc, x->rc);
+      x->dist = 1 + x->rc->dist;
     }
     return x;
   }
@@ -237,12 +313,15 @@ public:
   explicit leftist_heap(const allocator_type &alloc)
       : impl_(node_allocator_(alloc)) {}
 
-  leftist_heap(const leftist_heap &other) {
-    // TODO
+  leftist_heap(const leftist_heap &other) : impl_(other.impl_) {
+    if (other.root_() != nullptr)
+      root_() = copy_(other);
   }
 
-  leftist_heap(const leftist_heap &other, const allocator_type &alloc) {
-    // TODO
+  leftist_heap(const leftist_heap &other, const allocator_type &alloc)
+      : impl_(other.impl_, node_allocator_(alloc)) {
+    if (other.root_() != nullptr)
+      root_() = copy_(other);
   }
 
   leftist_heap(leftist_heap &&from) = default;
@@ -252,26 +331,34 @@ public:
 
   leftist_heap(std::initializer_list<value_type> init,
                const Compare &comp = Compare(),
-               const allocator_type &alloc = allocator_type()) {
-    // TODO
+               const allocator_type &alloc = allocator_type())
+      : leftist_heap(comp, alloc) {
+    for (auto value : init)
+      push(value);
   }
 
   leftist_heap(std::initializer_list<value_type> init,
-               const allocator_type &alloc = allocator_type())
+               const allocator_type &alloc)
       : leftist_heap(init, Compare(), alloc) {}
 
   // Deconstructor
 
-  ~leftist_heap() noexcept { erase_(root_()); }
+  ~leftist_heap() noexcept { clear(); }
 
   // Assignment operator
 
   leftist_heap &operator=(const leftist_heap &other) {
-    // TODO
+    if (this != std::addressof(other)) {
+      this->impl_.comp = other.impl_.comp;
+      copy_assign_(other);
+    }
+    return *this;
   }
 
   leftist_heap &operator=(leftist_heap &&from) {
-    // TODO
+    this->impl_.comp = std::move(from.impl_.comp);
+    move_assign_(from);
+    return *this;
   }
 
   // Element access
@@ -309,16 +396,47 @@ public:
 
   // Remove the top element.
   void pop() {
-    node_ptr_ heap = root_();
-    node_ptr_ tmp = merge_node_(heap.lc, heap.rc);
-    destroy_node_(heap);
+    node_ptr_ tmp = merge_node_(root_()->lc, root_()->rc);
+    drop_node_(root_());
     root_() = tmp;
     --this->impl_.node_count;
   }
 
+  // Remove all elements.
+  void clear() noexcept {
+    erase_(root_());
+    this->impl_.reset();
+  }
+
   // Swap two heaps.
-  void swap(leftist_heap &other) noexcept {
-    // TODO
+  void swap(leftist_heap &other) noexcept(
+      std::is_nothrow_swappable<Compare>::value) {
+    // There might be some performance issues.
+    std::swap(this->impl_, other.impl_);
+  }
+
+  // Merge two heaps.
+  void merge(const leftist_heap &other) {
+    // if (other.root_() != nullptr) {
+    //   // will spend extra time copying nodes in `other`
+    //   root_() = merge_node_(root_(), copy_(other));
+    //   this->impl_.node_count += other.impl_.node_count;
+    // }
+    auto tmp(other);
+    assert(tmp.size() == other.size());
+    assert(tmp.top() == other.top());
+    auto cur = size();
+    merge(std::move(tmp));
+    assert(size() == other.size() + cur);
+  }
+
+  // time complexity is about O(max_dist(this) + max_dist(from)), while the
+  // maximum dist in a leftist heap is not greater than
+  // ceil(log(node_count + 1))
+  void merge(leftist_heap &&from) {
+    root_() = merge_node_(root_(), from.root_());
+    this->impl_.node_count += from.impl_.node_count;
+    from.impl_.reset();
   }
 
   // Observers
