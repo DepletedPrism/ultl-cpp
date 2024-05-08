@@ -417,17 +417,11 @@ public:
 
   // Merge two heaps.
   void merge(const leftist_heap &other) {
-    // if (other.root_() != nullptr) {
-    //   // will spend extra time copying nodes in `other`
-    //   root_() = merge_node_(root_(), copy_(other));
-    //   this->impl_.node_count += other.impl_.node_count;
-    // }
-    auto tmp(other);
-    assert(tmp.size() == other.size());
-    assert(tmp.top() == other.top());
-    auto cur = size();
-    merge(std::move(tmp));
-    assert(size() == other.size() + cur);
+    if (other.root_() != nullptr) {
+      // will spend extra time copying nodes in `other`
+      root_() = merge_node_(root_(), copy_(other));
+      this->impl_.node_count += other.impl_.node_count;
+    }
   }
 
   // time complexity is about O(max_dist(this) + max_dist(from)), while the
